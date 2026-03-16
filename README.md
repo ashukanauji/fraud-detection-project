@@ -1,4 +1,4 @@
-# Fraud Detection System (Production-Style)
+# Fraud Detection System
 
 A complete end-to-end fraud detection project using the Kaggle **Credit Card Fraud Detection** dataset.
 
