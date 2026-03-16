@@ -9,10 +9,7 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer, make_column_selector
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
-
 
 TARGET_COLUMN = "Class"
 
@@ -24,20 +21,23 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         self.amount_col = amount_col
         self.time_col = time_col
 
-    def fit(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> "FeatureEngineer":
+    def fit(self, X: pd.DataFrame, y: Optional[pd.Series] = None):
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         X = X.copy()
+
         if self.amount_col in X.columns:
             X["LogAmount"] = np.log1p(X[self.amount_col].clip(lower=0))
             mad = (X[self.amount_col] - X[self.amount_col].median()).abs().median()
             X["AmountZ"] = (X[self.amount_col] - X[self.amount_col].median()) / (mad + 1e-6)
+
         if self.time_col in X.columns:
             seconds_in_day = 24 * 60 * 60
             X["Hour"] = (X[self.time_col] % seconds_in_day) / 3600
             X["DayCycleSin"] = np.sin(2 * np.pi * X["Hour"] / 24)
             X["DayCycleCos"] = np.cos(2 * np.pi * X["Hour"] / 24)
+
         return X
 
 
@@ -49,41 +49,51 @@ class DatasetBundle:
 
 
 def load_dataset(csv_path: str, target_column: str = TARGET_COLUMN) -> DatasetBundle:
-    """Load and minimally clean dataset."""
+    """Load and safely clean dataset."""
+
     data = pd.read_csv(csv_path)
+
+    # Replace infinite values with NaN
+    data = data.replace([np.inf, -np.inf], np.nan)
+
+    # Drop rows where target is NaN
+    data = data.dropna(subset=[target_column])
+
+    # Ensure target is numeric
+    data[target_column] = pd.to_numeric(data[target_column], errors="coerce")
+
+    # Replace remaining NaN targets with 0
+    data[target_column] = data[target_column].fillna(0)
+
+    # Remove duplicates
     data = data.drop_duplicates().reset_index(drop=True)
 
     if target_column not in data.columns:
         raise ValueError(f"Target column '{target_column}' not found in dataset.")
 
     X = data.drop(columns=[target_column])
+
+    # Convert target safely
     y = data[target_column].astype(int)
 
     return DatasetBundle(data=data, X=X, y=y)
 
 
-def build_preprocessor() -> Pipeline:
-    """Build preprocessing pipeline with imputation + scaling + feature engineering."""
-    numeric_transformer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", RobustScaler()),
-        ]
-    )
+def build_preprocessor():
+    """Build preprocessing transformer."""
 
-    col_transformer = ColumnTransformer(
-        transformers=[("num", numeric_transformer, make_column_selector(dtype_include=np.number))],
+    numeric_transformer = ColumnTransformer(
+        transformers=[
+            (
+                "num",
+                RobustScaler(),
+                make_column_selector(dtype_include=np.number),
+            )
+        ],
         remainder="drop",
-        verbose_feature_names_out=False,
     )
 
-    preprocessor = Pipeline(
-        steps=[
-            ("feature_engineering", FeatureEngineer()),
-            ("column_transformer", col_transformer),
-        ]
-    )
-    return preprocessor
+    return numeric_transformer
 
 
 def train_test_split_stratified(
@@ -92,6 +102,7 @@ def train_test_split_stratified(
     test_size: float = 0.2,
     random_state: int = 42,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+
     from sklearn.model_selection import train_test_split
 
     return train_test_split(

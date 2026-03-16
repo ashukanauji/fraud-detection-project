@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 import joblib
-import numpy as np
 import pandas as pd
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
@@ -74,17 +73,17 @@ def get_models(scale_pos_weight: float) -> Dict[str, object]:
     }
 
 
-def get_imbalance_steps(strategy: str):
+def get_imbalance_step(strategy: str):
     if strategy == "none":
-        return []
+        return None
     if strategy == "smote":
-        return [("sampling", SMOTE(random_state=RANDOM_STATE))]
+        return SMOTE(random_state=RANDOM_STATE)
     if strategy == "undersample":
-        return [("sampling", RandomUnderSampler(random_state=RANDOM_STATE))]
+        return RandomUnderSampler(random_state=RANDOM_STATE)
     raise ValueError(f"Unknown imbalance strategy: {strategy}")
 
 
-def evaluate_predictions(y_true: pd.Series, y_pred: np.ndarray, y_proba: np.ndarray) -> Dict[str, float]:
+def evaluate_predictions(y_true, y_pred, y_proba):
     return {
         "precision": precision_score(y_true, y_pred, zero_division=0),
         "recall": recall_score(y_true, y_pred, zero_division=0),
@@ -95,25 +94,42 @@ def evaluate_predictions(y_true: pd.Series, y_pred: np.ndarray, y_proba: np.ndar
 
 
 def train_all_models(data_path: str, model_output_path: str, metrics_output_path: str) -> Tuple[pd.DataFrame, str]:
+
     ds = load_dataset(data_path)
     X_train, X_test, y_train, y_test = train_test_split_stratified(ds.X, ds.y)
 
     scale_pos_weight = (y_train == 0).sum() / max((y_train == 1).sum(), 1)
+
     models = get_models(scale_pos_weight)
 
     results: List[ModelResult] = []
+
     best_f1 = -1.0
     best_pipeline = None
     best_name = ""
 
     for strategy in ["none", "smote", "undersample"]:
+
         for model_name, model in models.items():
-            steps = [("preprocessor", build_preprocessor())] + get_imbalance_steps(strategy) + [("model", model)]
+
+            sampler = get_imbalance_step(strategy)
+
+            steps = [
+                ("preprocessor", build_preprocessor())
+            ]
+
+            if sampler:
+                steps.append(("sampler", sampler))
+
+            steps.append(("model", model))
+
             pipeline = ImbPipeline(steps=steps)
+
             pipeline.fit(X_train, y_train)
 
             y_pred = pipeline.predict(X_test)
             y_proba = pipeline.predict_proba(X_test)[:, 1]
+
             scores = evaluate_predictions(y_test, y_pred, y_proba)
             cm = confusion_matrix(y_test, y_pred)
 
@@ -127,6 +143,7 @@ def train_all_models(data_path: str, model_output_path: str, metrics_output_path
                 pr_auc=scores["pr_auc"],
                 confusion_matrix=cm.tolist(),
             )
+
             results.append(result)
 
             if result.f1 > best_f1:
@@ -135,9 +152,13 @@ def train_all_models(data_path: str, model_output_path: str, metrics_output_path
                 best_name = f"{model_name} + {strategy}"
 
     os.makedirs(os.path.dirname(model_output_path), exist_ok=True)
+
     joblib.dump(best_pipeline, model_output_path)
 
-    metrics_df = pd.DataFrame([r.__dict__ for r in results]).sort_values(by=["f1", "roc_auc"], ascending=False)
+    metrics_df = pd.DataFrame([r.__dict__ for r in results]).sort_values(
+        by=["f1", "roc_auc"], ascending=False
+    )
+
     metrics_df.to_csv(metrics_output_path, index=False)
 
     summary = {
@@ -146,22 +167,36 @@ def train_all_models(data_path: str, model_output_path: str, metrics_output_path
         "model_path": model_output_path,
         "metrics_path": metrics_output_path,
     }
-    with open(metrics_output_path.replace(".csv", "_summary.json"), "w", encoding="utf-8") as f:
+
+    with open(metrics_output_path.replace(".csv", "_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
 
     return metrics_df, best_name
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args():
+
     parser = argparse.ArgumentParser(description="Train fraud detection models.")
+
     parser.add_argument("--data-path", default="data/creditcard.csv")
+
     parser.add_argument("--model-output", default="models/best_fraud_model.joblib")
+
     parser.add_argument("--metrics-output", default="models/model_comparison.csv")
+
     return parser.parse_args()
 
 
 if __name__ == "__main__":
+
     args = parse_args()
-    results_df, best = train_all_models(args.data_path, args.model_output, args.metrics_output)
+
+    results_df, best = train_all_models(
+        args.data_path,
+        args.model_output,
+        args.metrics_output,
+    )
+
     print(results_df.head(10).to_string(index=False))
+
     print(f"\nBest model: {best}")

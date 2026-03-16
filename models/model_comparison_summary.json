@@ -1,0 +1,6 @@
+{
+  "best_model": "logistic_regression + none",
+  "best_f1": 1.0,
+  "model_path": "models/best_fraud_model.joblib",
+  "metrics_path": "models/model_comparison.csv"
+}
